@@ -379,8 +379,7 @@
       # 获取本机 IP
       LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
       if [ -z "$LOCAL_IP" ]; then
-          LOCAL_IP=$(ifconfig 2>/dev/null | grep "inet " | grep -v 127.0.0.1
-   | awk '{print $2}' | head -n1)
+          LOCAL_IP=$(ifconfig 2>/dev/null | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -n1)
       fi
       if [ -z "$LOCAL_IP" ]; then
           LOCAL_IP="your-server-ip"
