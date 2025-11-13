@@ -1,448 +1,210 @@
- #!/bin/bash
+#!/bin/bash
 
-  # ================================
-  # Docker 服务一键部署脚本
-  # ================================
+# ========================================
+# Docker Compose 服务部署脚本
+# ========================================
 
-  set -e  # 遇到错误立即退出
+set -e  # 遇到错误立即退出
 
-  # 颜色定义
-  RED='\033[0;31m'
-  GREEN='\033[0;32m'
-  YELLOW='\033[1;33m'
-  BLUE='\033[0;34m'
-  NC='\033[0m' # No Color
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-  # 打印带颜色的消息
-  print_info() {
-      echo -e "${BLUE}[INFO]${NC} $1"
-  }
+# 日志函数
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
 
-  print_success() {
-      echo -e "${GREEN}[SUCCESS]${NC} $1"
-  }
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
 
-  print_warning() {
-      echo -e "${YELLOW}[WARNING]${NC} $1"
-  }
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
 
-  print_error() {
-      echo -e "${RED}[ERROR]${NC} $1"
-  }
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
 
-  # 打印横幅
-  print_banner() {
-      echo -e "${BLUE}"
-      echo "=================================================="
-      echo "       Docker 服务一键部署脚本"
-      echo "=================================================="
-      echo -e "${NC}"
-  }
+# ========================================
+# 1. 检查必要命令
+# ========================================
+check_commands() {
+    log_info "检查必要命令..."
 
-  # 检查命令是否存在
-  command_exists() {
-      command -v "$1" >/dev/null 2>&1
-  }
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker 未安装，请先安装 Docker"
+        exit 1
+    fi
 
-  # 检测操作系统类型
-  detect_os() {
-      if [ -f /etc/os-release ]; then
-          . /etc/os-release
-          OS=$ID
-          OS_VERSION=$VERSION_ID
-      elif [ -f /etc/redhat-release ]; then
-          OS="centos"
-      elif [ -f /etc/debian_version ]; then
-          OS="debian"
-      else
-          OS=$(uname -s)
-      fi
-      echo $OS
-  }
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        log_error "Docker Compose 未安装，请先安装 Docker Compose"
+        exit 1
+    fi
 
-  # 检查是否为 root 或有 sudo 权限
-  check_root() {
-      if [ "$EUID" -ne 0 ]; then
-          if ! command_exists sudo; then
-              print_error "需要 root 权限或 sudo 命令"
-              exit 1
-          fi
-          SUDO="sudo"
-      else
-          SUDO=""
-      fi
-  }
+    log_success "命令检查完成"
+}
 
-  # 为 Ubuntu/Debian 安装 Docker
-  install_docker_ubuntu() {
-      print_info "在 Ubuntu/Debian 系统上安装 Docker..."
+# ========================================
+# 2. 检查 .env 文件
+# ========================================
+check_env_file() {
+    log_info "检查环境变量文件..."
 
-      # 更新包索引
-      $SUDO apt-get update
+    if [ ! -f .env ]; then
+        log_error ".env 文件不存在，请先创建配置文件"
+        exit 1
+    fi
 
-      # 安装必要的依赖
-      $SUDO apt-get install -y \
-          ca-certificates \
-          curl \
-          gnupg \
-          lsb-release
+    # 检查必须的环境变量
+    if ! grep -q "SB_SERVER_IP=" .env || grep -q "SB_SERVER_IP=123.123.123.123" .env; then
+        log_warning "请在 .env 文件中设置正确的 SB_SERVER_IP"
+    fi
 
-      # 添加 Docker 官方 GPG 密钥
-      $SUDO mkdir -p /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | $SUDO gpg
-  --dearmor -o /etc/apt/keyrings/docker.gpg
+    if ! grep -q "TS_AUTHKEY=" .env || grep -q "TS_AUTHKEY=your_tailscale_auth_key_here" .env || grep -q "TS_AUTHKEY=tskey-auth-replace-with-your-key" .env; then
+        log_warning "请在 .env 文件中设置正确的 TS_AUTHKEY"
+    fi
 
-      # 设置 Docker 仓库
-      echo \
-        "deb [arch=$(dpkg --print-architecture) 
-  signed-by=/etc/apt/keyrings/docker.gpg] 
-  https://download.docker.com/linux/ubuntu \
-        $(lsb_release -cs) stable" | $SUDO tee
-  /etc/apt/sources.list.d/docker.list > /dev/null
+    log_success "环境变量文件检查完成"
+}
 
-      # 更新包索引
-      $SUDO apt-get update
+# ========================================
+# 3. 创建必要的数据目录
+# ========================================
+create_directories() {
+    log_info "创建数据目录..."
 
-      # 安装 Docker Engine
-      $SUDO apt-get install -y docker-ce docker-ce-cli containerd.io
-  docker-buildx-plugin docker-compose-plugin
+    mkdir -p data/npm/{data,letsencrypt}
+    mkdir -p data/sunpanel/{conf,uploads,database}
+    mkdir -p data/resilio/{config,sync,downloads}
+    mkdir -p data/tailscale
+    mkdir -p data/qbittorrent/config
+    mkdir -p data/downloads
 
-      # 启动 Docker 服务
-      $SUDO systemctl start docker
-      $SUDO systemctl enable docker
+    log_success "数据目录创建完成"
+}
 
-      # 将当前用户添加到 docker 组
-      if [ -n "$SUDO_USER" ]; then
-          $SUDO usermod -aG docker $SUDO_USER
-          print_warning "请注销并重新登录以使 docker 组��限生效，或运行: 
-  newgrp docker"
-      elif [ -n "$USER" ]; then
-          $SUDO usermod -aG docker $USER
-          print_warning "请注销并重新登录以使 docker 组权限生效，或运行: 
-  newgrp docker"
-      fi
+# ========================================
+# 4. 检查端口占用
+# ========================================
+check_ports() {
+    log_info "检查端口占用..."
 
-      print_success "Docker 安装完成！"
-  }
+    ports=(80 443 81 3002 8888 8080 55555 54881)
+    occupied_ports=()
 
-  # 为 CentOS/RHEL 安装 Docker
-  install_docker_centos() {
-      print_info "在 CentOS/RHEL 系统上安装 Docker..."
+    for port in "${ports[@]}"; do
+        if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1 || netstat -tuln 2>/dev/null | grep -q ":$port "; then
+            occupied_ports+=($port)
+        fi
+    done
 
-      # 安装必要的依赖
-      $SUDO yum install -y yum-utils
+    if [ ${#occupied_ports[@]} -gt 0 ]; then
+        log_warning "以下端口已被占用: ${occupied_ports[*]}"
+        log_warning "请确保这些端口可用，或修改 docker-compose.yml 中的端口映射"
+        read -p "是否继续部署？(y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "部署已取消"
+            exit 0
+        fi
+    else
+        log_success "端口检查完成"
+    fi
+}
 
-      # 添加 Docker 仓库
-      $SUDO yum-config-manager --add-repo
-  https://download.docker.com/linux/centos/docker-ce.repo
+# ========================================
+# 5. 拉取镜像
+# ========================================
+pull_images() {
+    log_info "拉取最新镜像..."
 
-      # 安装 Docker Engine
-      $SUDO yum install -y docker-ce docker-ce-cli containerd.io
-  docker-buildx-plugin docker-compose-plugin
+    if docker compose version &> /dev/null; then
+        docker compose pull
+    else
+        docker-compose pull
+    fi
 
-      # 启动 Docker 服务
-      $SUDO systemctl start docker
-      $SUDO systemctl enable docker
+    log_success "镜像拉取完成"
+}
 
-      # 将当前用户添加到 docker 组
-      if [ -n "$SUDO_USER" ]; then
-          $SUDO usermod -aG docker $SUDO_USER
-          print_warning "请注销并重新登录以使 docker 组权限生效"
-      elif [ -n "$USER" ]; then
-          $SUDO usermod -aG docker $USER
-          print_warning "请注销并重新登录以使 docker 组权限生效"
-      fi
+# ========================================
+# 6. 启动服务
+# ========================================
+start_services() {
+    log_info "启动服务..."
 
-      print_success "Docker 安装完成！"
-  }
+    if docker compose version &> /dev/null; then
+        docker compose up -d
+    else
+        docker-compose up -d
+    fi
 
-  # 安装 Docker
-  install_docker() {
-      OS=$(detect_os)
+    log_success "服务启动完成"
+}
 
-      print_warning "检测到系统: $OS"
-      print_info "准备自动安装 Docker..."
+# ========================================
+# 7. 显示服务状态
+# ========================================
+show_status() {
+    log_info "服务状态："
+    echo ""
 
-      read -p "是否继续安装 Docker? (y/n): " -n 1 -r
-      echo
-      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-          print_error "用户取消安装"
-          exit 1
-      fi
+    if docker compose version &> /dev/null; then
+        docker compose ps
+    else
+        docker-compose ps
+    fi
 
-      check_root
+    echo ""
+    log_info "服务访问地址："
+    echo -e "  ${GREEN}Nginx Proxy Manager:${NC} http://localhost:81"
+    echo -e "    默认登录: admin@example.com / changeme"
+    echo -e "  ${GREEN}SunPanel:${NC} http://localhost:3002"
+    echo -e "  ${GREEN}Resilio Sync:${NC} http://localhost:8888"
+    echo -e "  ${GREEN}qBittorrent:${NC} http://localhost:8080"
+    echo -e "    默认用户名: admin"
+    echo -e "    默认密码在日志中，使用以下命令查看："
+    echo -e "    docker logs qbittorrent"
+}
 
-      case $OS in
-          ubuntu|debian)
-              install_docker_ubuntu
-              ;;
-          centos|rhel|fedora)
-              install_docker_centos
-              ;;
-          *)
-              print_error "不支持的操作系统: $OS"
-              print_info "请手动安装 Docker: 
-  https://docs.docker.com/get-docker/"
-              exit 1
-              ;;
-      esac
-  }
+# ========================================
+# 主函数
+# ========================================
+main() {
+    echo ""
+    log_info "========================================="
+    log_info "开始部署 Docker Compose 服务"
+    log_info "========================================="
+    echo ""
 
-  # 检查 Docker
-  check_docker() {
-      print_info "检查 Docker 是否安装..."
-      if command_exists docker; then
-          print_success "Docker 已安装: $(docker --version)"
-      else
-          print_warning "Docker 未安装！"
-          install_docker
-      fi
+    check_commands
+    check_env_file
+    create_directories
+    check_ports
+    pull_images
+    start_services
 
-      # 检查 Docker 是否运行
-      if ! docker info >/dev/null 2>&1; then
-          print_warning "Docker 未运行！尝试启动 Docker 服务..."
-          check_root
-          $SUDO systemctl start docker || {
-              print_error "无法启动 Docker 服务"
-              print_info "请手动启动: sudo systemctl start docker"
-              exit 1
-          }
-          print_success "Docker 服务已启动"
-      fi
-  }
+    echo ""
+    log_success "========================================="
+    log_success "部署完成！"
+    log_success "========================================="
+    echo ""
 
-  # 检查 Docker Compose
-  check_docker_compose() {
-      print_info "检查 Docker Compose 是否安装..."
-      if docker compose version >/dev/null 2>&1; then
-          print_success "Docker Compose 已安装: $(docker compose version)"
-      elif command_exists docker-compose; then
-          print_success "Docker Compose 已安装: $(docker-compose --version)"
-      else
-          print_warning "Docker Compose 未安装！"
-          print_info "Docker Compose 通常随 Docker 安装，请重新检查..."
+    show_status
 
-          # 尝试重新检查
-          if docker compose version >/dev/null 2>&1; then
-              print_success "Docker Compose 可用"
-          else
-              print_error "Docker Compose 不可用"
-              print_info "请手动安装: 
-  https://docs.docker.com/compose/install/"
-              exit 1
-          fi
-      fi
-  }
+    echo ""
+    log_info "常用命令："
+    echo "  启动服务: docker-compose up -d"
+    echo "  停止服务: docker-compose down"
+    echo "  查看日志: docker-compose logs -f [服务名]"
+    echo "  重启服务: docker-compose restart [服务名]"
+    echo ""
+}
 
-  # 检查 .env 文件
-  check_env_file() {
-      print_info "检查 .env 配置文件..."
-      if [ ! -f .env ]; then
-          print_error ".env 文件不存在！"
-          if [ -f .env.example ]; then
-              print_info "从 .env.example 复制配置文件..."
-              cp .env.example .env
-              print_warning "请编辑 .env 文件，设置数据库密码和 Tailscale 
-  密钥"
-              print_info "编辑命令: nano .env 或 vi .env"
-              read -p "按回车键继续，或 Ctrl+C 退出编辑 .env 文件..."
-          else
-              print_error "找不到 .env.example 文件！"
-              exit 1
-          fi
-      else
-          print_success ".env 文件已存在"
-      fi
-  }
-
-  # 创建数据目录
-  create_data_dirs() {
-      print_info "创建数据目录..."
-
-      directories=(
-          "data/npm/data"
-          "data/npm/letsencrypt"
-          "data/wordpress/db"
-          "data/wordpress/html"
-          "data/sunpanel/conf"
-          "data/sunpanel/uploads"
-          "data/sunpanel/database"
-          "data/resilio/config"
-          "data/resilio/sync"
-          "data/resilio/downloads"
-          "data/tailscale"
-          "data/qbittorrent/config"
-          "data/qbittorrent/downloads"
-      )
-
-      for dir in "${directories[@]}"; do
-          if [ ! -d "$dir" ]; then
-              mkdir -p "$dir"
-              print_success "创建目录: $dir"
-          fi
-      done
-
-      print_success "所有数据目录已准备就绪"
-  }
-
-  # 检查端口占用
-  check_ports() {
-      print_info "检查端口占用情况..."
-
-      ports=(80 81 443 3002 8080 8090 8888 6881 55555)
-      occupied_ports=()
-
-      for port in "${ports[@]}"; do
-          if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1 || netstat -an
-  2>/dev/null | grep ":$port " | grep LISTEN >/dev/null; then
-              occupied_ports+=($port)
-          fi
-      done
-
-      if [ ${#occupied_ports[@]} -gt 0 ]; then
-          print_warning "以下端口已被占用: ${occupied_ports[*]}"
-          print_warning "这可能导致服务启动失败"
-          read -p "是否继续部署? (y/n): " -n 1 -r
-          echo
-          if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-              print_info "部署已取消"
-              exit 0
-          fi
-      else
-          print_success "所有端口可用"
-      fi
-  }
-
-  # 停止现有服务
-  stop_existing_services() {
-      print_info "停止现有的 Docker 服务..."
-      if docker compose ps -q 2>/dev/null | grep -q .; then
-          docker compose down
-          print_success "现有服务已停止"
-      else
-          print_info "没有运行中的服务"
-      fi
-  }
-
-  # 拉取最新镜像
-  pull_images() {
-      print_info "拉取最新的 Docker 镜像（这可能需要几分钟）..."
-      if docker compose pull; then
-          print_success "镜像拉取完成"
-      else
-          print_warning "部分镜像拉取失败，将尝试继续部署"
-      fi
-  }
-
-  # 启动服务
-  start_services() {
-      print_info "启动 Docker 服务..."
-      if docker compose up -d; then
-          print_success "服务启动成功！"
-      else
-          print_error "服务启动失败！"
-          print_info "查看日志: docker compose logs"
-          exit 1
-      fi
-  }
-
-  # 等待服务健康检查
-  wait_for_services() {
-      print_info "等待服务启动（约30秒）..."
-      sleep 10
-
-      print_info "检查 MySQL 数据库健康状态..."
-      for i in {1..30}; do
-          if docker inspect wordpress-db 2>/dev/null | grep -q '"Status": 
-  "healthy"'; then
-              print_success "MySQL 数据库已就绪"
-              break
-          fi
-          echo -n "."
-          sleep 2
-      done
-      echo
-
-      sleep 5
-  }
-
-  # 显示服务状态
-  show_status() {
-      print_info "服务状态："
-      echo
-      docker compose ps
-      echo
-  }
-
-  # 显示访问信息
-  show_access_info() {
-      # 获取本机 IP
-      LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-      if [ -z "$LOCAL_IP" ]; then
-          LOCAL_IP=$(ifconfig 2>/dev/null | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -n1)
-      fi
-      if [ -z "$LOCAL_IP" ]; then
-          LOCAL_IP="your-server-ip"
-      fi
-
-      echo -e "${GREEN}"
-      echo "=================================================="
-      echo "          服务访问信息"
-      echo "=================================================="
-      echo -e "${NC}"
-      echo -e "${BLUE}Nginx Proxy Manager:${NC}"
-      echo "  - 地址: http://${LOCAL_IP}:81"
-      echo "  - 默认账号: admin@example.com"
-      echo "  - 默认密码: changeme"
-      echo
-      echo -e "${BLUE}WordPress:${NC}"
-      echo "  - 地址: http://${LOCAL_IP}:8080"
-      echo
-      echo -e "${BLUE}SunPanel:${NC}"
-      echo "  - 地址: http://${LOCAL_IP}:3002"
-      echo
-      echo -e "${BLUE}Resilio Sync:${NC}"
-      echo "  - 地址: http://${LOCAL_IP}:8888"
-      echo
-      echo -e "${BLUE}qBittorrent:${NC}"
-      echo "  - 地址: http://${LOCAL_IP}:8090"
-      echo "  - 默认用户: admin"
-      echo "  - 密码查看: docker logs qbittorrent"
-      echo
-      echo -e "${YELLOW}常用命令:${NC}"
-      echo "  查看服务状态: docker compose ps"
-      echo "  查看服务日志: docker compose logs -f [服务名]"
-      echo "  停止服务: docker compose down"
-      echo "  重启服务: docker compose restart [服务名]"
-      echo
-  }
-
-  # 主函数
-  main() {
-      print_banner
-
-      # 检查系统环境
-      check_docker
-      check_docker_compose
-      check_env_file
-
-      # 准备部署
-      create_data_dirs
-      check_ports
-
-      # 部署服务
-      stop_existing_services
-      pull_images
-      start_services
-
-      # 等待并显示结果
-      wait_for_services
-      show_status
-      show_access_info
-
-      print_success "部署完成！"
-  }
-
-  # 运行主函数
-  main
-
+# 执行主函数
+main
